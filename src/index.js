@@ -33,6 +33,8 @@ function getPlayer (id) {
     return players[id - 1];
 }
 
+let diceNumber = 0;
+
 
 /**
  * changes to next player's turn and resets phase to DRAW.
@@ -88,6 +90,9 @@ function diceClick (player) {
     if (players.findIndex(p => p.uuid == player.uuid) + 1 == currentPlayerId && phase == PHASE_DRAW) {
         var randomNumber = Math.floor(Math.random() * 6 + 1);
 
+        // we save this number to determine possible moves in phase MOVE
+        diceNumber = randomNumber;
+
         io.to("board").emit("draw", {
             number: randomNumber,
         });
@@ -104,7 +109,38 @@ function diceClick (player) {
 }
 
 function pawnClick (player, pawn) {
+    if (phase != PHASE_MOVE)
+        return false;
 
+    if (players.findIndex(p => p.uuid == player.uuid) + 1 != currentPlayerId)
+        return false;
+    
+    if (pawn.location == LOCATION_BASE) {
+        if (diceNumber != 1 && diceNumber != 6)
+            return false;
+
+        pawn.location = LOCATION_BOARD;
+        pawn.position = 1 + currentPlayerId * 10 - 10;
+        pawn.fieldsLeft = 43;
+        pawn.shift = currentPlayerId * 10 - 10;
+    } else {
+        if (pawn.fieldsLeft < diceNumber)
+            return false;
+
+        pawn.fieldsLeft -= diceNumber;
+
+        if (pawn.position - pawn.shift + diceNumber > 40) {
+            // pawn goes home!
+            pawn.location = LOCATION_HOME;
+            pawn.position = pawn.position + diceNumber - 40;    
+        } else {
+            pawn.position += diceNumber;
+        }
+    }
+
+    updatePawns(players.findIndex(p => p.uuid == player.uuid) + 1);
+
+    nextPlayer();
 }
 
 function updatePawns (playerId) {
@@ -119,12 +155,17 @@ function updatePawns (playerId) {
 io.on('connection', (socket) => {
     console.log('Player connected - socket ' + socket.id);
     
+    socket.join('board');
+
+    players.forEach((player,index) => {
+        socket.emit("playerReady", player);
+        updatePawns(index + 1);
+    });
+    
     socket.on('readyToPlay', (player) => {
         var existing = players.find(p => {
             return p.uuid == player.uuid;
         });
-
-        socket.join('board');
 
         if (!existing) {
             // Create new player in this board's memory
@@ -153,7 +194,7 @@ io.on('connection', (socket) => {
 
         socket.on('pawnClick', (pawn) => {
             console.log('pawnClick', pawn);
-            pawnClick(getPlayerByUuid(socket.player.uuid), pawn);
+            pawnClick(getPlayerByUuid(socket.player.uuid), player.pawns.find(p => p.number == pawn.number));
         })
 
         socket.on('diceClick', () => {
@@ -161,7 +202,7 @@ io.on('connection', (socket) => {
             diceClick(getPlayerByUuid(socket.player.uuid));
         });
 
-        // if (players.length == 4)
+        if (players.length == 2)
             startGame();
     });
 });
