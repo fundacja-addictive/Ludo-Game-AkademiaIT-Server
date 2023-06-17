@@ -18,6 +18,10 @@ app.get('/', (req, res) => {
 const PHASE_DRAW = 0;
 const PHASE_MOVE = 1;
 
+const LOCATION_BASE = 'inBase';
+const LOCATION_HOME = 'inHome';
+const LOCATION_BOARD = 'inBoard';
+
 let players = [];
 
 let currentPlayerId = 0;
@@ -29,24 +33,87 @@ function getPlayer (id) {
     return players[id - 1];
 }
 
-function startGame() {
-    io.to("board").emit("gameStart");
 
-    var startPlayer = Math.floor(Math.random() * 4 + 1); 
+/**
+ * changes to next player's turn and resets phase to DRAW.
+ * 
+ * @date 2023-06-17
+ * @returns {any}
+ */
+function nextPlayer () {
+    if (currentPlayerId == players.length)
+        currentPlayerId = 1;
+    else 
+        currentPlayerId++;
 
-    currentPlayerId = startPlayer;
+    phase = PHASE_DRAW;
+
+    playerTurn(currentPlayerId);
+}
+
+/**
+ * Emits information about who's turn is it
+ * 
+ * @date 2023-06-17
+ * @param {any} playerId
+ * @returns {any}
+ */
+function playerTurn (playerId) {
     io.to("board").emit("playerTurn", {
-        id: getPlayer(currentPlayerId).id,
-        name: getPlayer(currentPlayerId).name,
+        uuid: getPlayer(playerId).uuid,
+        name: getPlayer(playerId).name,
     });
 }
 
-function diceClick (playerId) {
+/**
+ * Gets Player of a given uuid. If player is not found, returns false.
+ * 
+ * @date 2023-06-17
+ * @param {String} uuid - uuid of a Player
+ * @returns {Player}
+ */
+function getPlayerByUuid (uuid) {
+    return players.find(p => p.uuid == uuid);
+}
+
+function startGame() {
+    io.to("board").emit("gameStart");
+
+    currentPlayerId = Math.floor(Math.random() * (players.length) + 1); 
+
+    playerTurn(currentPlayerId);
+}
+
+function diceClick (player) {
+    if (players.findIndex(p => p.uuid == player.uuid) + 1 == currentPlayerId && phase == PHASE_DRAW) {
+        var randomNumber = Math.floor(Math.random() * 6 + 1);
+
+        io.to("board").emit("draw", {
+            number: randomNumber,
+        });
+
+        // make decision if player looses his turn
+        if (![1,6].includes(randomNumber) 
+            && !player.pawns.find(pawn => pawn.location != LOCATION_BASE && pawn.fieldsLeft > 0)
+        ) { // player looses turn
+            nextPlayer();
+        } else { // player can pick a pawn
+            phase = PHASE_MOVE;
+        }
+    }
+}
+
+function pawnClick (player, pawn) {
 
 }
 
-function pawnClick (playerId, pawn) {
+function updatePawns (playerId) {
+    console.log(getPlayer(playerId).pawns);
 
+    io.to("board").emit("updatePawns", {
+        playerUuid: getPlayer(playerId).uuid,
+        pawns: getPlayer(playerId).pawns,
+    });
 }
 
 io.on('connection', (socket) => {
@@ -60,8 +127,24 @@ io.on('connection', (socket) => {
         socket.join('board');
 
         if (!existing) {
-            player.socket = socket;
+            // Create new player in this board's memory
+            // player.socket = socket;
+            player.pawns = [];
+            for (var i = 1; i <= 4; i++) {
+                player.pawns.push({
+                    number: i,
+                    location: LOCATION_BASE,
+                    position: i,
+                    fieldsLeft: 43,
+                });
+            }
             players.push(player);
+
+            io.to("board").emit("playerReady", player);
+
+            socket.player = player;
+
+            updatePawns(players.length);
         } else {
             existing.socket = socket;
         }
@@ -70,13 +153,15 @@ io.on('connection', (socket) => {
 
         socket.on('pawnClick', (pawn) => {
             console.log('pawnClick', pawn);
+            pawnClick(getPlayerByUuid(socket.player.uuid), pawn);
         })
 
         socket.on('diceClick', () => {
             console.log('diceClick');
+            diceClick(getPlayerByUuid(socket.player.uuid));
         });
 
-        if (players.length == 4)
+        // if (players.length == 4)
             startGame();
     });
 });
