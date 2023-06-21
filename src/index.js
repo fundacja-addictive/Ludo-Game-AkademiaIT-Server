@@ -99,7 +99,7 @@ function diceClick (player) {
 
         // make decision if player looses his turn
         if (![1,6].includes(randomNumber) 
-            && !player.pawns.find(pawn => pawn.location != LOCATION_BASE && pawn.fieldsLeft > 0)
+            && !player.pawns.find(pawn => pawn.location != LOCATION_BASE && pawn.fieldsLeft >= randomNumber)
         ) { // player looses turn
             nextPlayer();
         } else { // player can pick a pawn
@@ -129,23 +129,51 @@ function pawnClick (player, pawn) {
 
         pawn.fieldsLeft -= diceNumber;
 
-        if (pawn.position - pawn.shift + diceNumber > 40) {
+        if (pawn.fieldsLeft - diceNumber < 4) {
             // pawn goes home!
             pawn.location = LOCATION_HOME;
-            pawn.position = pawn.position + diceNumber - 40;    
+            pawn.position = 4 - pawn.fieldsLeft;
         } else {
             pawn.position += diceNumber;
         }
     }
 
+    if (pawn.position > 40)
+        pawn.position -= 40; // TODO: figure out if this really works 
+
+    // Get pawns already on this field
+    var pawns = getPawns(pawn.location, pawn.position);
+    
+    if (pawns.length == 2) {
+        if (pawns[0].playerId != pawns[1].playerId) {
+            var theOtherPawn = pawns.find(p => p.playerId != pawn.playerId);
+            console.log("theOtherPawn:", theOtherPawn);
+            theOtherPawn.location = LOCATION_BASE;
+            theOtherPawn.position = 1;
+
+            updatePawns(theOtherPawn.playerId);
+        }
+    }
+    
     updatePawns(players.findIndex(p => p.uuid == player.uuid) + 1);
 
     nextPlayer();
 }
 
-function updatePawns (playerId) {
-    console.log(getPlayer(playerId).pawns);
+function getPawns (location, position) {
+    var pawns = [];
 
+    players.forEach(player => {
+        player.pawns.forEach(pawn => {
+            if (pawn.location == location && pawn.position == position)
+                pawns.push(pawn);
+        });
+    });
+
+    return pawns;
+}
+
+function updatePawns (playerId) {
     io.to("board").emit("updatePawns", {
         playerUuid: getPlayer(playerId).uuid,
         pawns: getPlayer(playerId).pawns,
@@ -170,6 +198,8 @@ io.on('connection', (socket) => {
         if (!existing) {
             // Create new player in this board's memory
             // player.socket = socket;
+            var playerId = players.length + 1;
+
             player.pawns = [];
             for (var i = 1; i <= 4; i++) {
                 player.pawns.push({
@@ -177,6 +207,7 @@ io.on('connection', (socket) => {
                     location: LOCATION_BASE,
                     position: i,
                     fieldsLeft: 43,
+                    playerId: playerId,
                 });
             }
             players.push(player);
@@ -185,7 +216,7 @@ io.on('connection', (socket) => {
 
             socket.player = player;
 
-            updatePawns(players.length);
+            updatePawns(playerId);
         } else {
             existing.socket = socket;
         }
@@ -193,12 +224,13 @@ io.on('connection', (socket) => {
         console.log('Socket ' + socket.id, player);
 
         socket.on('pawnClick', (pawn) => {
-            console.log('pawnClick', pawn);
+            if (socket.player.uuid != pawn.playerUuid)
+                return;
+
             pawnClick(getPlayerByUuid(socket.player.uuid), player.pawns.find(p => p.number == pawn.number));
         })
 
         socket.on('diceClick', () => {
-            console.log('diceClick');
             diceClick(getPlayerByUuid(socket.player.uuid));
         });
 
