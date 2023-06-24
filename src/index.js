@@ -124,14 +124,33 @@ function pawnClick (player, pawn) {
         pawn.fieldsLeft = 43;
         pawn.shift = currentPlayerId * 10 - 10;
     } else {
+        // If there are not enough fields left for this pawn
         if (pawn.fieldsLeft < diceNumber)
             return false;
 
+        if (getPawns(LOCATION_HOME, {player: player}).filter(p => p.number != pawn.number && p.position > pawn.position).length) {
+            // If another pawn is in home and blocks enterance 
+            if (pawn.fieldsLeft - diceNumber < 4 &&
+                4 - (pawn.fieldsLeft - diceNumber) >= getPawns(LOCATION_HOME, {player: player})
+                                                .filter(p => p.number != pawn.number && p.position > pawn.position)
+                                                .sort((a,b) => a.position - b.position)[0].position
+                )
+                return false;
+        }
+
         pawn.fieldsLeft -= diceNumber;
 
-        if (pawn.fieldsLeft - diceNumber < 4) {
-            // pawn goes home!
-            pawn.location = LOCATION_HOME;
+        var inHome = getPawns(LOCATION_HOME, {player: player});
+
+        if (pawn.fieldsLeft < 4 - inHome.length) {
+            if (pawn.location == LOCATION_BOARD) {
+                // pawn goes home!
+                pawn.location = LOCATION_HOME;
+
+                getPawns(LOCATION_BOARD, {player: player}).filter(p => p.number != pawn.number).forEach(p => p.fieldsLeft--);
+                getPawns(LOCATION_BASE, {player: player}).filter(p => p.number != pawn.number).forEach(p => p.fieldsLeft--);
+            }
+
             pawn.position = 4 - pawn.fieldsLeft;
         } else {
             pawn.position += diceNumber;
@@ -141,31 +160,35 @@ function pawnClick (player, pawn) {
     if (pawn.position > 40)
         pawn.position -= 40; // TODO: figure out if this really works 
 
-    // Get pawns already on this field
-    var pawns = getPawns(pawn.location, pawn.position);
+    // beating is only possible on board    
+    if (pawn.location == LOCATION_BOARD) {
+        // Get pawns already on this field
+        var pawns = getPawns(pawn.location, {position: pawn.position});
+        
+        if (pawns.length == 2) {
+            if (pawns[0].playerId != pawns[1].playerId) {
+                var theOtherPawn = pawns.find(p => p.playerId != pawn.playerId);
+                // console.log("theOtherPawn:", theOtherPawn);
+                theOtherPawn.position = [1,2,3,4].filter(i => !getPawns(LOCATION_BASE, {player: getPlayer(theOtherPawn.playerId)}).flatMap(p => p.position).includes(i))[0];
+                theOtherPawn.location = LOCATION_BASE;
     
-    if (pawns.length == 2) {
-        if (pawns[0].playerId != pawns[1].playerId) {
-            var theOtherPawn = pawns.find(p => p.playerId != pawn.playerId);
-            console.log("theOtherPawn:", theOtherPawn);
-            theOtherPawn.location = LOCATION_BASE;
-            theOtherPawn.position = 1;
-
-            updatePawns(theOtherPawn.playerId);
+                updatePawns(theOtherPawn.playerId);
+            }
         }
     }
-    
+
     updatePawns(players.findIndex(p => p.uuid == player.uuid) + 1);
 
     nextPlayer();
 }
 
-function getPawns (location, position) {
+function getPawns (location, {position = undefined, player = undefined}) {
     var pawns = [];
 
-    players.forEach(player => {
+    (player ? [player] : players)
+    .forEach(player => {
         player.pawns.forEach(pawn => {
-            if (pawn.location == location && pawn.position == position)
+            if (pawn.location == location && (pawn.position == position || position == undefined))
                 pawns.push(pawn);
         });
     });
@@ -181,16 +204,9 @@ function updatePawns (playerId) {
 }
 
 io.on('connection', (socket) => {
-    console.log('Player connected - socket ' + socket.id);
-    
     socket.join('board');
-
-    players.forEach((player,index) => {
-        socket.emit("playerReady", player);
-        updatePawns(index + 1);
-    });
     
-    socket.on('readyToPlay', (player) => {
+    socket.on('onBoard', (player) => {
         var existing = players.find(p => {
             return p.uuid == player.uuid;
         });
@@ -201,6 +217,25 @@ io.on('connection', (socket) => {
             var playerId = players.length + 1;
 
             player.pawns = [];
+            player.readyToPlay = false;
+            players.push(player);
+
+            socket.player = player;
+        } else {
+            existing.socket = socket;
+        }
+
+        if (players.length >= 2)
+            io.to("board").emit("enoughPlayers", {});
+
+        console.log('Socket ' + socket.id + ' is player uuid ' + player.uuid + ' (name: ' + player.name + ')');
+
+        socket.on('readyToPlay', (playerRaw) => {
+            console.log("Socket " + socket.id + " player is ready to play uuid " + playerRaw.uuid)
+            // substitute raw player with player model from players[]
+            player = getPlayer(playerId);
+            player.readyToPlay = true;
+
             for (var i = 1; i <= 4; i++) {
                 player.pawns.push({
                     number: i,
@@ -210,18 +245,20 @@ io.on('connection', (socket) => {
                     playerId: playerId,
                 });
             }
-            players.push(player);
 
+            // players.forEach((player,index) => {
+            //     // socket.emit("playerReady", player);
+            //     updatePawns(index + 1);
+            // });
+
+            
             io.to("board").emit("playerReady", player);
-
-            socket.player = player;
-
             updatePawns(playerId);
-        } else {
-            existing.socket = socket;
-        }
 
-        console.log('Socket ' + socket.id, player);
+            if (players.filter(p => p.readyToPlay).length == players.length)
+                startGame();
+        });
+
 
         socket.on('pawnClick', (pawn) => {
             if (socket.player.uuid != pawn.playerUuid)
@@ -233,8 +270,5 @@ io.on('connection', (socket) => {
         socket.on('diceClick', () => {
             diceClick(getPlayerByUuid(socket.player.uuid));
         });
-
-        if (players.length == 2)
-            startGame();
     });
 });
